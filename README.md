@@ -1,46 +1,52 @@
 # AstrBot 人格自更新插件
 
-该插件通过工具调用驱动的 Agent 流程，让 LLM 自动读取并更新 AstrBot 中的指定人格设定，适用于需要频繁迭代 persona 配置的场景。
+该插件通过函数调用驱动的 Agent 流程，让 LLM 先读取再更新 AstrBot 中的指定人格，适用于持续迭代 persona 配置的场景。
 
-**⚠️ 强烈建议使用前备份人格数据，以防模型修改产生不可逆差异。**
-**本插件基于astrbot4.0+框架进行开发**
+**⚠️ 使用前建议先备份人格数据。**
+**本插件面向 AstrBot 4.x 当前接口。**
 
-## 功能特色
-- `/人格更新` 命令触发独立 Agent，让模型根据指令调整系统提示、开场白、工具列表等字段。
-- 内置 `get_persona_detail`、`update_persona_details` 两个函数工具，模型会先读取现有配置再执行改动，避免误操作。
-- 自动返回更新后的完整人格信息，方便确认改动内容。
+## 功能
+
+- 提供 `/人格更新 <人格ID> <更新要求>` 命令，让模型自动分析并更新人格。
+- 兼容当前 AstrBot persona 字段：`system_prompt`、`begin_dialogs`、`tools`、`skills`、`custom_error_message`。
+- 支持在插件配置中直接选择 LLM Provider。
+- 支持在 `provider` 留空时，通过指定 AstrBot 配置名/ID/文件名读取该配置的默认对话 Provider。
 
 ## 安装与启用
-1. 将插件目录 `astrbot_plugin_personal_selfupdate` 放入 AstrBot 的 `data/plugins/` 目录。
-2. 在 AstrBot 后台启用插件，或在配置文件中加载该插件。
-3. 确保已有可用的 LLM Provider，并在 AstrBot 中完成账号/密钥配置。
+
+1. 将插件目录 `astrbot_plugin_personal_selfupdate` 放入 `data/plugins/`。
+2. 在 AstrBot 后台启用该插件。
+3. 确保 AstrBot 中已有可用的聊天 Provider。
 
 ## 配置项
-在插件 `metadata.yaml` 或 AstrBot 后台中可设置以下字段：
-- `provider`：指定使用的 Provider ID。留空则使用当前会话默认 Provider。
-- `model`：模型名称，传递给 Provider。如果留空将由 Provider 决定默认模型。
+
+- `provider`：插件直接使用的 Provider ID。后台已接入 `_special: select_provider` 选择器。
+- `astrbot_config`：可选的 AstrBot 配置名、配置 ID 或配置文件名，例如 `default`、`abconf_xxx.json`。仅在 `provider` 留空时生效，用于读取该配置中的 `provider_settings.default_provider_id`。
+- `model`：可选模型名。留空时由 Provider 自己决定默认模型。
+
+Provider 选择顺序如下：
+
+1. 优先使用插件配置中的 `provider`。
+2. 若 `provider` 为空，则尝试使用 `astrbot_config` 对应配置里的默认对话 Provider。
+3. 若仍无法确定，则回退到当前消息会话实际使用的 Provider。
 
 ## 使用方法
-在聊天窗口输入命令：
-```
+
+聊天中执行：
+
+```text
 /人格更新 <人格ID> <更新要求>
 ```
+
 示例：
+
+```text
+/人格更新 伯特 保留当前设定，把语气改得更专业，补充一条出错时的友好提示
 ```
-/人格更新 伯特 请让他的语气更专业，增加一次问候开场
-```
-插件将分为四步执行：
-1. 调用 `get_persona_detail` 获取现有人格。
-2. Agent 分析差异并规划更新。
-3. 调用 `update_persona_details` 写回最新配置。
-4. 返回修改摘要及更新后的字段，供用户确认。
 
 ## 注意事项
-- `begin_dialogs` 需要偶数条记录，模型会按“用户/助手”交替排列；若数量不正确，底层会重置为空列表。
-- 若人格 ID 不存在或数据库不可写，插件会返回详细错误信息，请按照提示排查。
-- Agent 会在最终总结前输出 `[AGENT_DONE]` 标记，插件据此判断流程完成。
-- 推荐在测试环境先验证效果，再应用到生产人格。
 
-## 常见问题
-- **模型没有调用更新工具怎么办？** 请尝试换用更可靠的模型。
-- **更新结果与预期不符？** 可再次运行命令并在指令中给出更具体的修改要求。例如：“保留原有问候语，仅将语气改为正式”。
+- `begin_dialogs` 必须为偶数条，并按“用户 / 助手”交替排列。
+- 模型会先调用 `get_persona_detail`，再调用 `update_persona_details`；建议使用函数调用稳定的模型。
+- 如果只想改局部内容，请在指令里明确说明“保留其它字段不变”。
+- 若指定的 Provider 或 AstrBot 配置不存在，插件会自动回退到当前会话 Provider。

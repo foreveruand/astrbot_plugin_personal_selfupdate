@@ -2,13 +2,20 @@
     "provider": {
         "type": "string",
         "description": "服务提供商",
-        "hint": "空则为默认服务提供商",
+        "hint": "留空时优先使用下方 AstrBot 配置中的默认对话 Provider；若未设置则回退到当前会话 Provider。",
+        "default": "",
+        "_special": "select_provider"
+    },
+    "astrbot_config": {
+        "type": "string",
+        "description": "AstrBot 配置",
+        "hint": "可填写配置名、配置 ID 或实际文件名，例如 default 或 abconf_xxx.json。仅在 provider 留空时生效，用于读取该配置中的默认对话 Provider。",
         "default": ""
     },
     "model": {
         "type": "string",
         "description": "模型",
-        "hint": "请设置为能力较强的模型以得到较好效果",
+        "hint": "可选。留空时由选中的 Provider 决定默认模型；建议使用工具调用能力较强的模型。",
         "default": ""
     }
 }

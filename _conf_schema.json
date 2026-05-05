@@ -17,5 +17,13 @@
         "description": "模型",
         "hint": "可选。留空时由选中的 Provider 决定默认模型；建议使用工具调用能力较强的模型。",
         "default": ""
+    },
+    "history_limit": {
+        "type": "int",
+        "description": "每个人格保留的历史条数",
+        "hint": "保存在 data/plugin_data/astrbot_plugin_personal_selfupdate/persona_history.json。设为 0 可关闭历史记录。",
+        "default": 5,
+        "min": 0,
+        "max": 50
     }
 }

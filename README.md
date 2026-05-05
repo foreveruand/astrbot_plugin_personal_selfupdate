@@ -11,6 +11,7 @@
 - 兼容当前 AstrBot persona 字段：`system_prompt`、`begin_dialogs`、`tools`、`skills`、`custom_error_message`。
 - 支持在插件配置中直接选择 LLM Provider。
 - 支持在 `provider` 留空时，通过指定 AstrBot 配置名/ID/文件名读取该配置的默认对话 Provider。
+- 支持为每个人格持久化保留最近几次变更历史，并通过命令预览后回滚。
 
 ## 安装与启用
 
@@ -23,6 +24,7 @@
 - `provider`：插件直接使用的 Provider ID。后台已接入 `_special: select_provider` 选择器。
 - `astrbot_config`：可选的 AstrBot 配置名、配置 ID 或配置文件名，例如 `default`、`abconf_xxx.json`。仅在 `provider` 留空时生效，用于读取该配置中的 `provider_settings.default_provider_id`。
 - `model`：可选模型名。留空时由 Provider 自己决定默认模型。
+- `history_limit`：每个人格保留的最近历史条数，默认 `5`。设为 `0` 可关闭历史记录。
 
 Provider 选择顺序如下：
 
@@ -44,9 +46,29 @@ Provider 选择顺序如下：
 /人格更新 伯特 保留当前设定，把语气改得更专业，补充一条出错时的友好提示
 ```
 
+查看历史：
+
+```text
+/人格历史 伯特
+```
+
+预览某次历史并决定是否回滚：
+
+```text
+/人格回滚 伯特 1
+/人格回滚 伯特 1 确认
+```
+
+历史记录会持久化保存到：
+
+```text
+data/plugin_data/astrbot_plugin_personal_selfupdate/persona_history.json
+```
+
 ## 注意事项
 
 - `begin_dialogs` 必须为偶数条，并按“用户 / 助手”交替排列。
 - 模型会先调用 `get_persona_detail`，再调用 `update_persona_details`；建议使用函数调用稳定的模型。
 - 如果只想改局部内容，请在指令里明确说明“保留其它字段不变”。
 - 若指定的 Provider 或 AstrBot 配置不存在，插件会自动回退到当前会话 Provider。
+- `/人格回滚` 默认先输出该历史的 `system_prompt` 与主要字段，只有追加 `确认` 才会真正执行回滚。

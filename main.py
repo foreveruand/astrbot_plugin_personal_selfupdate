@@ -1,10 +1,13 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import AstrBotConfig, ToolSet, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import LLMResponse
 from astrbot.api.star import Context, Star, register
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .core.tools import GetPersonaDetailTool, UpdatePersonaDetailsTool
 
@@ -34,6 +37,8 @@ DEFAULT_USER_PROMPT = "开始执行。"
 TOOL_CALL_PLACEHOLDER_PROMPT = " "
 MAX_AGENT_ITERATIONS = 10
 COMPLETION_SENTINEL = "[AGENT_DONE]"  # Agent completion marker
+DEFAULT_HISTORY_LIMIT = 5
+HISTORY_FILE_NAME = "persona_history.json"
 
 
 class ProviderResolutionError(Exception):
@@ -48,7 +53,7 @@ class AgentExecutionError(Exception):
     "personal_selfupdate",
     "kterna",
     "通过与LLM对话来更新人格",
-    "0.2.0",
+    "0.3.0",
     "https://github.com/kterna/astrbot_plugin_personal_selfupdate",
 )
 class Main(Star):
@@ -59,6 +64,9 @@ class Main(Star):
         super().__init__(context)
         self.config = config
         self._persona_cache = {}
+        self._plugin_data_dir = Path(get_astrbot_plugin_data_path()) / self.name
+        self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        self._history_file = self._plugin_data_dir / HISTORY_FILE_NAME
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("人格更新", "persona update")
@@ -74,6 +82,15 @@ class Main(Star):
             yield event.plain_result(str(error))
             return
 
+        try:
+            original_persona = await self.context.persona_manager.get_persona(
+                persona_id
+            )
+        except Exception as error:
+            yield event.plain_result(f"获取人格失败: {error}")
+            return
+
+        original_snapshot = self._persona_to_snapshot(original_persona)
         self._reset_persona_cache()
 
         logger.info(
@@ -102,6 +119,16 @@ class Main(Star):
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
             )
+            updated_persona = await self.context.persona_manager.get_persona(persona_id)
+            updated_snapshot = self._persona_to_snapshot(updated_persona)
+            if not self._snapshots_equal(original_snapshot, updated_snapshot):
+                self._record_persona_history(
+                    persona_id=persona_id,
+                    snapshot=original_snapshot,
+                    source_action="update",
+                    update_requirement=update_requirement,
+                    summary=final_text,
+                )
             yield event.plain_result(f"✅ 更新完成\n{final_text}")
         except AgentExecutionError as error:
             logger.error(f"执行人格更新 Agent 流程时出错: {error}", exc_info=True)
@@ -109,6 +136,122 @@ class Main(Star):
         except Exception as error:
             logger.error(f"执行人格更新 Agent 流程时出错: {error}", exc_info=True)
             yield event.plain_result(f"❌ 更新失败: {error}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("人格历史", "persona history")
+    async def persona_history(self, event: AstrMessageEvent):
+        try:
+            persona_id = self._parse_history_request(event)
+        except ValueError as error:
+            yield event.plain_result(str(error))
+            return
+
+        history = self._get_persona_history(persona_id)
+        if not history:
+            yield event.plain_result(f"人格 '{persona_id}' 暂无历史记录。")
+            return
+
+        lines = [f"人格 '{persona_id}' 的最近 {len(history)} 条历史记录："]
+        for index, entry in enumerate(history, start=1):
+            snapshot = entry.get("snapshot", {})
+            prompt_preview = self._truncate_text(
+                str(snapshot.get("system_prompt", "") or ""),
+                80,
+            )
+            reason = self._truncate_text(
+                str(
+                    entry.get("update_requirement")
+                    or entry.get("summary")
+                    or entry.get("source_action")
+                    or ""
+                ),
+                60,
+            )
+            lines.append(
+                f"{index}. {entry.get('recorded_at', 'unknown')} [{entry.get('source_action', 'unknown')}]"
+            )
+            lines.append(f"prompt: {prompt_preview}")
+            if reason:
+                lines.append(f"说明: {reason}")
+
+        lines.append(f"使用 /人格回滚 {persona_id} <序号> 预览并选择是否回滚。")
+        yield event.plain_result("\n".join(lines))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("人格回滚", "persona rollback")
+    async def persona_rollback(self, event: AstrMessageEvent):
+        try:
+            persona_id, history_index, confirmed = self._parse_rollback_request(event)
+        except ValueError as error:
+            yield event.plain_result(str(error))
+            return
+
+        history = self._get_persona_history(persona_id)
+        if not history:
+            yield event.plain_result(f"人格 '{persona_id}' 暂无历史记录。")
+            return
+
+        if history_index < 1 or history_index > len(history):
+            yield event.plain_result(
+                f"历史序号超出范围。当前共有 {len(history)} 条历史记录。"
+            )
+            return
+
+        entry = history[history_index - 1]
+        snapshot = entry.get("snapshot")
+        if not isinstance(snapshot, dict):
+            yield event.plain_result("历史记录损坏：缺少可回滚的 snapshot。")
+            return
+
+        if not confirmed:
+            yield event.plain_result(
+                self._render_history_preview(persona_id, history_index, entry)
+            )
+            return
+
+        try:
+            current_persona = await self.context.persona_manager.get_persona(persona_id)
+        except Exception as error:
+            yield event.plain_result(f"获取当前人格失败: {error}")
+            return
+
+        current_snapshot = self._persona_to_snapshot(current_persona)
+        if self._snapshots_equal(current_snapshot, snapshot):
+            yield event.plain_result("当前人格已经与目标历史记录一致，无需回滚。")
+            return
+
+        self._record_persona_history(
+            persona_id=persona_id,
+            snapshot=current_snapshot,
+            source_action="rollback",
+            update_requirement=f"rollback to history #{history_index}",
+            summary=(
+                f"Rollback to history #{history_index} "
+                f"recorded at {entry.get('recorded_at', 'unknown')}"
+            ),
+        )
+
+        try:
+            await self.context.persona_manager.update_persona(
+                persona_id,
+                system_prompt=str(snapshot.get("system_prompt", "") or ""),
+                begin_dialogs=self._normalize_dialogs(snapshot.get("begin_dialogs")),
+                tools=self._normalize_optional_string_list(snapshot.get("tools")),
+                skills=self._normalize_optional_string_list(snapshot.get("skills")),
+                custom_error_message=self._normalize_optional_string(
+                    snapshot.get("custom_error_message")
+                ),
+            )
+            self._reset_persona_cache()
+        except Exception as error:
+            logger.error(f"执行人格回滚失败: {error}", exc_info=True)
+            yield event.plain_result(f"执行人格回滚失败: {error}")
+            return
+
+        yield event.plain_result(
+            f"✅ 已将人格 '{persona_id}' 回滚到历史记录 #{history_index}。\n"
+            f"如需查看当前历史，可执行 /人格历史 {persona_id}"
+        )
 
     def _parse_update_request(self, event: AstrMessageEvent) -> tuple[str, str]:
         raw_message = event.message_str.strip()
@@ -128,6 +271,38 @@ class Main(Star):
             raise ValueError("更新要求不能为空，请提供具体说明。")
 
         return persona_id, update_requirement
+
+    def _parse_history_request(self, event: AstrMessageEvent) -> str:
+        raw_message = event.message_str.strip()
+        parts = raw_message.split(None, 1) if raw_message else []
+
+        if len(parts) < 2:
+            raise ValueError("参数不足，请提供人格ID。")
+
+        persona_id = parts[1].strip()
+        if not persona_id:
+            raise ValueError("人格ID 不能为空，请重新输入。")
+
+        return persona_id
+
+    def _parse_rollback_request(self, event: AstrMessageEvent) -> tuple[str, int, bool]:
+        raw_message = event.message_str.strip()
+        parts = raw_message.split() if raw_message else []
+
+        if len(parts) < 3:
+            raise ValueError("参数不足。用法: /人格回滚 <人格ID> <历史序号> [确认]")
+
+        persona_id = parts[1].strip()
+        if not persona_id:
+            raise ValueError("人格ID 不能为空，请重新输入。")
+
+        try:
+            history_index = int(parts[2])
+        except ValueError as error:
+            raise ValueError("历史序号必须是整数。") from error
+
+        confirmed = len(parts) >= 4 and parts[3].strip() in {"确认", "confirm", "yes"}
+        return persona_id, history_index, confirmed
 
     def _build_tool_set(self, event: AstrMessageEvent) -> ToolSet:
         return ToolSet(
@@ -386,3 +561,159 @@ class Main(Star):
             return remainder if remainder else COMPLETION_SENTINEL
 
         return text
+
+    def _get_history_limit(self) -> int:
+        value = self.config.get("history_limit", DEFAULT_HISTORY_LIMIT)
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "history_limit 配置非法，回退到默认值 %s", DEFAULT_HISTORY_LIMIT
+            )
+            return DEFAULT_HISTORY_LIMIT
+        return max(limit, 0)
+
+    def _load_history_store(self) -> dict[str, list[dict[str, Any]]]:
+        if not self._history_file.exists():
+            return {}
+
+        try:
+            raw = json.loads(self._history_file.read_text(encoding="utf-8"))
+        except Exception as error:
+            logger.error(f"读取人格历史文件失败: {error}", exc_info=True)
+            return {}
+
+        if not isinstance(raw, dict):
+            logger.warning("人格历史文件格式非法，已忽略。")
+            return {}
+
+        history_store: dict[str, list[dict[str, Any]]] = {}
+        for persona_id, entries in raw.items():
+            if isinstance(persona_id, str) and isinstance(entries, list):
+                history_store[persona_id] = [
+                    entry for entry in entries if isinstance(entry, dict)
+                ]
+        return history_store
+
+    def _save_history_store(self, store: dict[str, list[dict[str, Any]]]) -> None:
+        self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        self._history_file.write_text(
+            json.dumps(store, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _get_persona_history(self, persona_id: str) -> list[dict[str, Any]]:
+        store = self._load_history_store()
+        entries = store.get(persona_id, [])
+        return entries if isinstance(entries, list) else []
+
+    def _record_persona_history(
+        self,
+        persona_id: str,
+        snapshot: dict[str, Any],
+        source_action: str,
+        update_requirement: str,
+        summary: str,
+    ) -> None:
+        limit = self._get_history_limit()
+        if limit <= 0:
+            return
+
+        store = self._load_history_store()
+        entries = store.setdefault(persona_id, [])
+        entries.insert(
+            0,
+            {
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "source_action": source_action,
+                "update_requirement": update_requirement,
+                "summary": summary,
+                "snapshot": snapshot,
+            },
+        )
+        store[persona_id] = entries[:limit]
+        self._save_history_store(store)
+
+    def _persona_to_snapshot(self, persona: object) -> dict[str, Any]:
+        return {
+            "persona_id": getattr(persona, "persona_id", ""),
+            "system_prompt": getattr(persona, "system_prompt", "") or "",
+            "begin_dialogs": self._normalize_dialogs(
+                getattr(persona, "begin_dialogs", None)
+            ),
+            "tools": self._normalize_optional_string_list(
+                getattr(persona, "tools", None)
+            ),
+            "skills": self._normalize_optional_string_list(
+                getattr(persona, "skills", None)
+            ),
+            "custom_error_message": self._normalize_optional_string(
+                getattr(persona, "custom_error_message", None)
+            ),
+        }
+
+    def _normalize_dialogs(self, dialogs: object) -> list[str] | None:
+        if dialogs is None:
+            return None
+        if not isinstance(dialogs, list):
+            return None
+        return [str(item) for item in dialogs if isinstance(item, str)]
+
+    def _normalize_optional_string_list(self, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            return None
+        return [str(item) for item in value if isinstance(item, str)]
+
+    def _normalize_optional_string(self, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    def _snapshots_equal(self, left: dict[str, Any], right: dict[str, Any]) -> bool:
+        return json.dumps(left, sort_keys=True, ensure_ascii=False) == json.dumps(
+            right,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def _truncate_text(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 3]}..."
+
+    def _render_history_preview(
+        self, persona_id: str, history_index: int, entry: dict[str, Any]
+    ) -> str:
+        snapshot = entry.get("snapshot", {})
+        lines = [
+            f"人格 '{persona_id}' 历史记录 #{history_index}",
+            f"记录时间: {entry.get('recorded_at', 'unknown')}",
+            f"来源操作: {entry.get('source_action', 'unknown')}",
+        ]
+
+        requirement = str(entry.get("update_requirement", "") or "").strip()
+        if requirement:
+            lines.append(f"变更说明: {requirement}")
+
+        summary = str(entry.get("summary", "") or "").strip()
+        if summary:
+            lines.append(f"摘要: {summary}")
+
+        lines.extend(
+            [
+                "",
+                "历史 system_prompt:",
+                str(snapshot.get("system_prompt", "") or ""),
+                "",
+                f"begin_dialogs 条数: {len(snapshot.get('begin_dialogs') or [])}",
+                f"tools: {json.dumps(snapshot.get('tools'), ensure_ascii=False)}",
+                f"skills: {json.dumps(snapshot.get('skills'), ensure_ascii=False)}",
+                "custom_error_message: "
+                f"{snapshot.get('custom_error_message') or '(empty)'}",
+                "",
+                f"确认回滚请执行: /人格回滚 {persona_id} {history_index} 确认",
+            ]
+        )
+        return "\n".join(lines)

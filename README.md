@@ -23,7 +23,6 @@
 
 - `provider`：插件直接使用的 Provider ID。后台已接入 `_special: select_provider` 选择器。
 - `astrbot_config`：可选的 AstrBot 配置名、配置 ID 或配置文件名，例如 `default`、`abconf_xxx.json`。仅在 `provider` 留空时生效，用于读取该配置中的 `provider_settings.default_provider_id`。
-- `model`：可选模型名。留空时由 Provider 自己决定默认模型。
 - `history_limit`：每个人格保留的最近历史条数，默认 `5`。设为 `0` 可关闭历史记录。
 
 Provider 选择顺序如下：

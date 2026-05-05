@@ -34,7 +34,6 @@ SYSTEM_PROMPT_TEMPLATE = """你是人格配置专家，负责根据用户要求�
 请立即开始执行，先调用 get_persona_detail 工具。"""
 
 DEFAULT_USER_PROMPT = "开始执行。"
-TOOL_CALL_PLACEHOLDER_PROMPT = " "
 MAX_AGENT_ITERATIONS = 10
 COMPLETION_SENTINEL = "[AGENT_DONE]"  # Agent completion marker
 DEFAULT_HISTORY_LIMIT = 5
@@ -100,7 +99,7 @@ class Main(Star):
         tool_set = self._build_tool_set(event)
 
         try:
-            provider, model_name = self._resolve_provider(event)
+            provider_id = self._resolve_provider_id(event)
         except ProviderResolutionError as error:
             yield event.plain_result(f"获取服务提供商失败: {error}")
             return
@@ -113,8 +112,8 @@ class Main(Star):
 
         try:
             final_text = await self._run_agent_conversation(
-                provider=provider,
-                model_name=model_name,
+                event=event,
+                provider_id=provider_id,
                 tool_set=tool_set,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -312,10 +311,8 @@ class Main(Star):
             ]
         )
 
-    def _resolve_provider(self, event: AstrMessageEvent) -> tuple[object, str | None]:
+    def _resolve_provider_id(self, event: AstrMessageEvent) -> str:
         provider_id = str(self.config.get("provider", "") or "").strip()
-        model_name = self.config.get("model", "")
-        model_name = str(model_name) if model_name and model_name != "" else None
 
         try:
             provider_instance = None
@@ -363,7 +360,7 @@ class Main(Star):
             logger.error(f"获取服务提供商失败: {message}")
             raise ProviderResolutionError(message)
 
-        return provider_instance, model_name
+        return provider_instance.meta().id
 
     def _resolve_target_astrbot_config(
         self, event: AstrMessageEvent
@@ -410,133 +407,27 @@ class Main(Star):
 
     async def _run_agent_conversation(
         self,
-        provider,
-        model_name: str | None,
+        event: AstrMessageEvent,
+        provider_id: str,
         tool_set: ToolSet,
         system_prompt: str,
         user_prompt: str,
     ) -> str:
         logger.info("开始 LLM Agent 工具调用...")
 
-        max_iterations = MAX_AGENT_ITERATIONS
-        messages: list[dict] = []
-        current_prompt = user_prompt
-        final_text = ""
-
         try:
-            for _ in range(max_iterations):
-                response: LLMResponse = await provider.text_chat(
-                    prompt=current_prompt,
-                    system_prompt=system_prompt,
-                    model=model_name or None,
-                    func_tool=tool_set,
-                    session_id=None,
-                    contexts=messages,
-                    image_urls=[],
-                )
-
-                messages.append({"role": "user", "content": current_prompt})
-
-                if (
-                    hasattr(response, "tools_call_name")
-                    and hasattr(response, "tools_call_args")
-                    and response.tools_call_name
-                    and response.tools_call_args
-                ):
-                    tool_results = []
-                    tool_call_ids = getattr(
-                        response,
-                        "tools_call_ids",
-                        [
-                            f"{name}:{i}"
-                            for i, name in enumerate(response.tools_call_name)
-                        ],
-                    )
-
-                    for tool_name, tool_args, tool_id in zip(
-                        response.tools_call_name,
-                        response.tools_call_args,
-                        tool_call_ids,
-                    ):
-                        tool = tool_set.get_tool(tool_name)
-                        if tool and tool.handler:
-                            try:
-                                result = await tool.handler(**tool_args)
-                                tool_results.append(
-                                    {
-                                        "tool_call_id": tool_id,
-                                        "role": "tool",
-                                        "content": str(result),
-                                    }
-                                )
-                            except Exception as error:
-                                logger.error(f"工具 {tool_name} 执行失败: {error}")
-                                tool_results.append(
-                                    {
-                                        "tool_call_id": tool_id,
-                                        "role": "tool",
-                                        "content": f"工具执行失败: {error}",
-                                    }
-                                )
-                        else:
-                            logger.error(f"未找到工具: {tool_name}")
-                            tool_results.append(
-                                {
-                                    "tool_call_id": tool_id,
-                                    "role": "tool",
-                                    "content": f"未找到工具: {tool_name}",
-                                }
-                            )
-
-                    assistant_content = "调用工具"
-                    if response.result_chain and response.result_chain.chain:
-                        text = response.result_chain.chain[0].text
-                        if text and text.strip():
-                            assistant_content = text
-
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": assistant_content,
-                            "tool_calls": [
-                                {
-                                    "id": tool_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_name,
-                                        "arguments": json.dumps(tool_args)
-                                        if isinstance(tool_args, dict)
-                                        else str(tool_args),
-                                    },
-                                }
-                                for tool_name, tool_args, tool_id in zip(
-                                    response.tools_call_name,
-                                    response.tools_call_args,
-                                    tool_call_ids,
-                                )
-                            ],
-                        }
-                    )
-
-                    messages.extend(tool_results)
-                    current_prompt = TOOL_CALL_PLACEHOLDER_PROMPT
-                    continue
-
-                final_text = (
-                    response.completion_text
-                    if hasattr(response, "completion_text")
-                    else ""
-                )
-                if response.result_chain and response.result_chain.chain:
-                    final_text = response.result_chain.chain[0].text
-
-                break
-            else:
-                final_text = "工具调用超过最大次数限制"
-                logger.warning("工具调用循环达到最大次数限制")
+            response: LLMResponse = await self.context.tool_loop_agent(
+                event=event,
+                chat_provider_id=provider_id,
+                prompt=user_prompt,
+                tools=tool_set,
+                system_prompt=system_prompt,
+                max_steps=MAX_AGENT_ITERATIONS,
+            )
         except Exception as error:
             raise AgentExecutionError(str(error)) from error
 
+        final_text = response.completion_text or ""
         return self._extract_completion_text(final_text)
 
     def _reset_persona_cache(self) -> None:

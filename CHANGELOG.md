@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Fixed AstrBot tool invocation compatibility by switching plugin tools to the standard `FunctionTool.call(...)` path.
+- Restricted persona updates to `system_prompt` only, so the plugin no longer modifies `begin_dialogs`, `tools`, `skills`, or `custom_error_message`.
+- Updated README and plugin metadata to match the narrowed update scope.
+
 ## 0.3.0
 
 - Added persistent persona history storage under `data/plugin_data/astrbot_plugin_personal_selfupdate/persona_history.json`.

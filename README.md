@@ -1,6 +1,6 @@
 # AstrBot 人格自更新插件
 
-该插件通过函数调用驱动的 Agent 流程，让 LLM 先读取再更新 AstrBot 中的指定人格，适用于持续迭代 persona 配置的场景。
+该插件通过函数调用驱动的 Agent 流程，让 LLM 先读取再更新 AstrBot 中指定人格的 `system_prompt`，适用于持续迭代 persona 提示词的场景。
 
 **⚠️ 使用前建议先备份人格数据。**
 **本插件面向 AstrBot 4.x 当前接口。**
@@ -8,7 +8,7 @@
 ## 功能
 
 - 提供 `/人格更新 <人格ID> <更新要求>` 命令，让模型自动分析并更新人格。
-- 兼容当前 AstrBot persona 字段：`system_prompt`、`begin_dialogs`、`tools`、`skills`、`custom_error_message`。
+- 仅更新 persona 的 `system_prompt`，不会修改 `begin_dialogs`、`tools`、`skills`、`custom_error_message` 等其他字段。
 - 支持在插件配置中直接选择 LLM Provider。
 - 支持在 `provider` 留空时，通过指定 AstrBot 配置名/ID/文件名读取该配置的默认对话 Provider。
 - 支持为每个人格持久化保留最近几次变更历史，并通过命令预览后回滚。
@@ -66,8 +66,8 @@ data/plugin_data/astrbot_plugin_personal_selfupdate/persona_history.json
 
 ## 注意事项
 
-- `begin_dialogs` 必须为偶数条，并按“用户 / 助手”交替排列。
+- 插件当前只会修改 `system_prompt`，不会改动 `begin_dialogs`、`tools`、`skills` 或 `custom_error_message`。
 - 模型会先调用 `get_persona_detail`，再调用 `update_persona_details`；建议使用函数调用稳定的模型。
-- 如果只想改局部内容，请在指令里明确说明“保留其它字段不变”。
+- 如果只想改局部内容，请在指令里明确说明“保留原有 prompt 结构，只调整某一部分”。
 - 若指定的 Provider 或 AstrBot 配置不存在，插件会自动回退到当前会话 Provider。
 - `/人格回滚` 默认先输出该历史的 `system_prompt` 与主要字段，只有追加 `确认` 才会真正执行回滚。

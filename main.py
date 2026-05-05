@@ -11,22 +11,22 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .core.tools import GetPersonaDetailTool, UpdatePersonaDetailsTool
 
-SYSTEM_PROMPT_TEMPLATE = """你是人格配置专家，负责根据用户要求更新 AI 人格设定。
+SYSTEM_PROMPT_TEMPLATE = """你是人格配置专家，负责根据用户要求更新 AI 人格设定中的 system_prompt。
 可用工具：
-- get_persona_detail(persona_id): 获取人格当前设定 - 必须先调用
-- update_persona_details(persona_id, system_prompt?, begin_dialogs?, tools?, skills?, custom_error_message?): 更新人格设定,begin_dialogs为偶数个字符串，每个字符串代表一个对话，用户和助手轮流对话
+- get_persona_detail(persona_id): 获取人格当前的 system_prompt - 必须先调用
+- update_persona_details(persona_id, system_prompt): 仅更新人格的 system_prompt
 
 任务：更新人格 '{persona_id}'，要求：{update_requirement}
 
 重要：你必须严格按以下步骤执行：
 1. 调用 get_persona_detail 获取当前人格信息
 2. 根据要求分析需要修改的内容
-3. 调用 update_persona_details 应用修改
+3. 仅调用 update_persona_details 更新 system_prompt
 4. 简洁总结修改内容
 
 请严格按照上述流程执行。特别注意：
-- begin_dialogs 必须包含偶数条对话，且需按照“用户、助手”轮流排列。
-- 除非用户明确要求，否则不要修改无关字段；应尽量保留现有人格结构。
+- 你只能修改 system_prompt，不允许修改 begin_dialogs、tools、skills、custom_error_message 等其他字段。
+- 除非用户明确要求，否则不要改写无关设定；应尽量保留现有人格结构和原意。
 - 只有在完成分析并确定改动后，才调用一次 update_persona_details 应用修改。
 
 完成所有步骤后，请以 '{completion_sentinel}' 开头提供最终总结，简要说明修改内容及影响。
@@ -52,7 +52,7 @@ class AgentExecutionError(Exception):
     "personal_selfupdate",
     "kterna",
     "通过与LLM对话来更新人格",
-    "0.3.0",
+    "0.3.1",
     "https://github.com/kterna/astrbot_plugin_personal_selfupdate",
 )
 class Main(Star):
@@ -306,8 +306,8 @@ class Main(Star):
     def _build_tool_set(self, event: AstrMessageEvent) -> ToolSet:
         return ToolSet(
             [
-                GetPersonaDetailTool(main_plugin=self, event=event),
-                UpdatePersonaDetailsTool(main_plugin=self, event=event),
+                GetPersonaDetailTool(main_plugin=self),
+                UpdatePersonaDetailsTool(main_plugin=self),
             ]
         )
 
